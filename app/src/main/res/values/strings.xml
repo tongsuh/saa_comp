@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">触梦伴侣</string>
+    <string name="service_notification_title">清醒梦触梦守护中</string>
+    <string name="service_notification_text">正在监听 Sleep as Android 梦境广播并协同华为手环 8</string>
+</resources>

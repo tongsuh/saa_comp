@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" tools:targetApi="upside_down_cake" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <application
+        android:name=".DreamCueApp"
+        android:allowBackup="true"
+        android:icon="@drawable/ic_dream_pulse"
+        android:label="@string/app_name"
+        android:roundIcon="@drawable/ic_dream_pulse"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.DreamCueCompanion">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.DreamCueCompanion">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".service.DreamCueGuardService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            tools:targetApi="upside_down_cake">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Sleep as Android lucid dream companion and wearable pulse cueing" />
+        </service>
+
+    </application>
+
+</manifest>
