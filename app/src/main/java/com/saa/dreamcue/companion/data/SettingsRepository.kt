@@ -22,7 +22,8 @@ data class DreamCueSettings(
     val audioFadeInSeconds: Int = 3,
     val audioFadeOutSeconds: Int = 3,
     val vibrationTotalSeconds: Int = 6,
-    val cooldownMinutes: Int = 20, // Default changed to 20 minutes
+    val cooldownMinutes: Int = 20, // Default 20 minutes cooldown between triggers
+    val initialProtectionMinutes: Int = 0, // 0 = immediate, or 30/60/90 mins sleep onset protection
     val lastTriggerTimestamp: Long = 0L,
     val isGuardActive: Boolean = false,
     val bleScanEnabled: Boolean = true,
@@ -40,6 +41,7 @@ class SettingsRepository(private val context: Context) {
         val KEY_AUDIO_FADE_OUT_SECONDS = intPreferencesKey("audio_fade_out_seconds")
         val KEY_VIBRATION_TOTAL_SECONDS = intPreferencesKey("vibration_total_seconds")
         val KEY_COOLDOWN_MINUTES = intPreferencesKey("cooldown_minutes")
+        val KEY_INITIAL_PROTECTION_MINUTES = intPreferencesKey("initial_protection_minutes")
         val KEY_LAST_TRIGGER_TIMESTAMP = longPreferencesKey("last_trigger_timestamp")
         val KEY_IS_GUARD_ACTIVE = booleanPreferencesKey("is_guard_active")
         val KEY_BLE_SCAN_ENABLED = booleanPreferencesKey("ble_scan_enabled")
@@ -56,6 +58,7 @@ class SettingsRepository(private val context: Context) {
             audioFadeOutSeconds = preferences[PreferencesKeys.KEY_AUDIO_FADE_OUT_SECONDS] ?: 3,
             vibrationTotalSeconds = preferences[PreferencesKeys.KEY_VIBRATION_TOTAL_SECONDS] ?: 6,
             cooldownMinutes = preferences[PreferencesKeys.KEY_COOLDOWN_MINUTES] ?: 20,
+            initialProtectionMinutes = preferences[PreferencesKeys.KEY_INITIAL_PROTECTION_MINUTES] ?: 0,
             lastTriggerTimestamp = preferences[PreferencesKeys.KEY_LAST_TRIGGER_TIMESTAMP] ?: 0L,
             isGuardActive = preferences[PreferencesKeys.KEY_IS_GUARD_ACTIVE] ?: false,
             bleScanEnabled = preferences[PreferencesKeys.KEY_BLE_SCAN_ENABLED] ?: true,
@@ -91,6 +94,12 @@ class SettingsRepository(private val context: Context) {
     suspend fun updateCooldown(minutes: Int) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.KEY_COOLDOWN_MINUTES] = minutes
+        }
+    }
+
+    suspend fun updateInitialProtection(minutes: Int) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.KEY_INITIAL_PROTECTION_MINUTES] = minutes
         }
     }
 

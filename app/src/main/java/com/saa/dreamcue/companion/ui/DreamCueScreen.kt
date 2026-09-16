@@ -28,8 +28,10 @@ import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.HourglassEmpty
+import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.NightsStay
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -73,14 +75,22 @@ import com.saa.dreamcue.companion.ui.theme.TextTertiary
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DreamCueScreen(viewModel: DreamCueViewModel) {
+fun DreamCueScreen(
+    viewModel: DreamCueViewModel,
+    onRequestPermissions: () -> Unit = {},
+    onOpenSettings: () -> Unit = {}
+) {
     val context = LocalContext.current
     val settings by viewModel.settings.collectAsState()
     val isRunning by viewModel.isGuardRunning.collectAsState()
     val isExecuting by viewModel.isExecutingCue.collectAsState()
     val cooldownRemaining by viewModel.cooldownRemainingSeconds.collectAsState()
+    val protectionRemaining by viewModel.protectionRemainingSeconds.collectAsState()
     val isBleScanning by viewModel.isBleScanning.collectAsState()
     val lastTriggerSource by viewModel.lastTriggerSource.collectAsState()
+    val hasPermissions by viewModel.hasPermissions.collectAsState()
+    val hasBtPermission by viewModel.hasBtPermission.collectAsState()
+    val hasNotificationPermission by viewModel.hasNotificationPermission.collectAsState()
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -139,6 +149,16 @@ fun DreamCueScreen(viewModel: DreamCueViewModel) {
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
+                // Missing Permission Warning Banner
+                if (!hasPermissions) {
+                    PermissionWarningCard(
+                        hasBtPermission = hasBtPermission,
+                        hasNotificationPermission = hasNotificationPermission,
+                        onRequestPermissions = onRequestPermissions,
+                        onOpenSettings = onOpenSettings
+                    )
+                }
+
                 // Status & Cooldown Card
                 StatusCard(
                     isRunning = isRunning,
@@ -146,7 +166,9 @@ fun DreamCueScreen(viewModel: DreamCueViewModel) {
                     isBleScanning = isBleScanning,
                     lastTriggerSource = lastTriggerSource,
                     cooldownRemaining = cooldownRemaining,
-                    onResetCooldown = { viewModel.resetCooldown() }
+                    protectionRemaining = protectionRemaining,
+                    onResetCooldown = { viewModel.resetCooldown() },
+                    onSkipProtection = { viewModel.skipInitialProtection(context) }
                 )
 
                 // BLE Hardware Trigger Card
@@ -226,6 +248,12 @@ fun DreamCueScreen(viewModel: DreamCueViewModel) {
                     onTotalSecondsChange = { viewModel.updateVibration(it) }
                 )
 
+                // Initial Sleep Onset Protection Card
+                InitialProtectionConfigCard(
+                    initialProtectionMinutes = settings.initialProtectionMinutes,
+                    onInitialProtectionChange = { viewModel.updateInitialProtection(it) }
+                )
+
                 // Cooldown Setting Card (Default 20 mins)
                 CooldownConfigCard(
                     cooldownMinutes = settings.cooldownMinutes,
@@ -239,7 +267,15 @@ fun DreamCueScreen(viewModel: DreamCueViewModel) {
             BottomActionBar(
                 isRunning = isRunning,
                 onToggleGuard = {
-                    if (isRunning) viewModel.stopGuard(context) else viewModel.startGuard(context)
+                    if (isRunning) {
+                        viewModel.stopGuard(context)
+                    } else {
+                        if (!hasPermissions) {
+                            onRequestPermissions()
+                        } else {
+                            viewModel.startGuard(context)
+                        }
+                    }
                 },
                 onTestPreview = {
                     viewModel.triggerTestPreview(context)
@@ -277,13 +313,100 @@ fun StatusIndicator(isRunning: Boolean, isExecuting: Boolean) {
 }
 
 @Composable
+fun PermissionWarningCard(
+    hasBtPermission: Boolean,
+    hasNotificationPermission: Boolean,
+    onRequestPermissions: () -> Unit,
+    onOpenSettings: () -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = DarkCard),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.5.dp, Color(0xFFFFB74D), RoundedCornerShape(12.dp))
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = Color(0xFFFFB74D),
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "蓝牙扫描或必要权限未授予",
+                    color = Color(0xFFFFB74D),
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = buildString {
+                    append("检测到以下权限尚未授予，会导致无法扫描 ESP32 广播或手环无震动：\n")
+                    if (!hasBtPermission) {
+                        append("• 【附近的设备 / 蓝牙扫描】：用于在后台持续监听 ESP32 广播包\n")
+                    }
+                    if (!hasNotificationPermission) {
+                        append("• 【通知权限】：用于维持前台守护服务与华为手环8脉冲震动")
+                    }
+                }.trimEnd(),
+                color = TextSecondary,
+                fontSize = 12.sp,
+                lineHeight = 17.sp
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Button(
+                    onClick = onRequestPermissions,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(38.dp),
+                    shape = RoundedCornerShape(19.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = GoldAccent)
+                ) {
+                    Text(
+                        text = "点击立即授权",
+                        color = PureBlack,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onOpenSettings,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(38.dp),
+                    shape = RoundedCornerShape(19.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, GoldAccent)
+                ) {
+                    Text(text = "前往系统设置", color = GoldAccent, fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun StatusCard(
     isRunning: Boolean,
     isExecuting: Boolean,
     isBleScanning: Boolean,
     lastTriggerSource: String,
     cooldownRemaining: Int,
-    onResetCooldown: () -> Unit
+    protectionRemaining: Int,
+    onResetCooldown: () -> Unit,
+    onSkipProtection: () -> Unit
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = DarkCard),
@@ -330,6 +453,47 @@ fun StatusCard(
                 Text(text = lastTriggerSource, color = GoldAccent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             }
 
+            // Initial Sleep Onset Protection Countdown Banner
+            AnimatedVisibility(visible = isRunning && protectionRemaining > 0) {
+                Column {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(DarkSurface, RoundedCornerShape(8.dp))
+                            .border(1.dp, CyanAccent.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            Icon(
+                                imageVector = Icons.Default.HourglassTop,
+                                contentDescription = null,
+                                tint = CyanAccent,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            val mins = protectionRemaining / 60
+                            val secs = protectionRemaining % 60
+                            Text(
+                                text = "入睡保护中: ${mins}分${secs}秒 (静默防误触)",
+                                color = TextPrimary,
+                                fontSize = 12.sp
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onSkipProtection,
+                            modifier = Modifier.height(28.dp),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                        ) {
+                            Text(text = "跳过", fontSize = 11.sp, color = CyanAccent)
+                        }
+                    }
+                }
+            }
+
+            // Cooldown Lock Countdown Banner
             AnimatedVisibility(visible = cooldownRemaining > 0) {
                 Column {
                     Spacer(modifier = Modifier.height(10.dp))
@@ -341,7 +505,7 @@ fun StatusCard(
                             .background(DarkSurface, RoundedCornerShape(8.dp))
                             .padding(horizontal = 12.dp, vertical = 8.dp)
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                             Icon(
                                 imageVector = Icons.Default.HourglassEmpty,
                                 contentDescription = null,
@@ -723,6 +887,74 @@ fun VibrationConfigCard(
                 color = GoldDim,
                 fontSize = 11.sp,
                 lineHeight = 15.sp
+            )
+        }
+    }
+}
+
+@Composable
+fun InitialProtectionConfigCard(
+    initialProtectionMinutes: Int,
+    onInitialProtectionChange: (Int) -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = DarkCard),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, DarkBorder, RoundedCornerShape(12.dp))
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.HourglassTop,
+                        contentDescription = null,
+                        tint = GoldAccent,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "入睡保护期 (首次触发延迟)",
+                        color = TextPrimary,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Text(
+                    text = if (initialProtectionMinutes == 0) "0 分钟 (立即就绪)" else "${initialProtectionMinutes} 分钟",
+                    color = GoldAccent,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "开启后台守护后的前一段时间内完全静默，不响应任何广播。防止入睡阶段由于浅睡翻身或外设误触导致过早惊醒。建议睡前设为 60~90 分钟，日常测试设为 0 分钟立即生效。",
+                color = TextSecondary,
+                fontSize = 12.sp,
+                lineHeight = 17.sp
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            SliderItem(
+                title = "保护期时长",
+                valueDisplay = if (initialProtectionMinutes == 0) "立即就绪 (0分)" else "${initialProtectionMinutes} 分钟",
+                value = initialProtectionMinutes.toFloat(),
+                range = 0f..120f,
+                steps = 7, // 0, 15, 30, 45, 60, 75, 90, 105, 120
+                onValueChange = {
+                    val stepped = (Math.round(it / 15f) * 15).coerceIn(0, 120)
+                    onInitialProtectionChange(stepped)
+                }
             )
         }
     }

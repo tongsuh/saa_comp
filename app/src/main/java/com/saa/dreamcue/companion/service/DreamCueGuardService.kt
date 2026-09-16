@@ -47,6 +47,7 @@ class DreamCueGuardService : Service() {
         const val ACTION_START_GUARD = "com.saa.dreamcue.START_GUARD"
         const val ACTION_STOP_GUARD = "com.saa.dreamcue.STOP_GUARD"
         const val ACTION_TEST_TRIGGER = "com.saa.dreamcue.TEST_TRIGGER"
+        const val ACTION_SKIP_PROTECTION = "com.saa.dreamcue.SKIP_PROTECTION"
 
         // Sleep as Android official broadcast intent
         const val ACTION_SAA_LUCID_CUE = "com.urbandroid.sleep.LUCID_CUE_ACTION"
@@ -59,6 +60,9 @@ class DreamCueGuardService : Service() {
 
         private val _cooldownRemainingSeconds = MutableStateFlow(0)
         val cooldownRemainingSeconds: StateFlow<Int> = _cooldownRemainingSeconds.asStateFlow()
+
+        private val _protectionRemainingSeconds = MutableStateFlow(0)
+        val protectionRemainingSeconds: StateFlow<Int> = _protectionRemainingSeconds.asStateFlow()
 
         private val _isBleScanning = MutableStateFlow(false)
         val isBleScanning: StateFlow<Boolean> = _isBleScanning.asStateFlow()
@@ -83,10 +87,13 @@ class DreamCueGuardService : Service() {
     private var isLucidReceiverRegistered = false
     private var isBtReceiverRegistered = false
     private var activeExecutionJob: Job? = null
-    private var cooldownTickerJob: Job? = null
+    private var tickerJob: Job? = null
+
+    private var guardStartTime = 0L
 
     // In-memory atomic timestamp to prevent packet storm race conditions
     private val inMemoryLastTriggerTime = AtomicLong(0L)
+    private val inMemoryFastBurstTime = AtomicLong(0L)
 
     private val lucidReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -127,14 +134,14 @@ class DreamCueGuardService : Service() {
 
         bleScanController = BleScanController(applicationContext) { scanResult ->
             val deviceAddress = scanResult.device?.address ?: "Unknown"
-            Log.i(TAG, "Captured BLE Advertising packet with target UUID from $deviceAddress")
+            Log.i(TAG, "Captured BLE Advertising packet from $deviceAddress")
             handleLucidCueTrigger(source = "BLE 硬件广播 ($deviceAddress)", isTest = false)
         }
 
         acquireWakeLock()
         createGuardNotificationChannel()
         registerBluetoothStateReceiver()
-        startCooldownTicker()
+        startTicker()
 
         _isRunning.value = true
         Log.i(TAG, "DreamCueGuardService created and initialized")
@@ -151,7 +158,16 @@ class DreamCueGuardService : Service() {
                 Log.i(TAG, "Received test trigger request from UI")
                 handleLucidCueTrigger(source = "手动调试测试", isTest = true)
             }
+            ACTION_SKIP_PROTECTION -> {
+                Log.i(TAG, "User manually skipped initial sleep onset protection")
+                clearInitialProtection()
+                return START_STICKY
+            }
             else -> {
+                if (guardStartTime == 0L) {
+                    guardStartTime = System.currentTimeMillis()
+                }
+
                 val notification = buildForegroundNotification(
                     title = "清醒梦双模守护中",
                     content = "已挂载 SaA 广播监听与低功耗蓝牙硬件级过滤扫描"
@@ -198,11 +214,13 @@ class DreamCueGuardService : Service() {
         _isRunning.value = false
         _isExecutingCue.value = false
         _isBleScanning.value = false
+        _cooldownRemainingSeconds.value = 0
+        _protectionRemainingSeconds.value = 0
         unregisterLucidReceiver()
         unregisterBluetoothStateReceiver()
         bleScanController.stopScanning()
         activeExecutionJob?.cancel()
-        cooldownTickerJob?.cancel()
+        tickerJob?.cancel()
         audioController.stop()
         pulseController.cancelAllActive()
         releaseWakeLock()
@@ -212,6 +230,11 @@ class DreamCueGuardService : Service() {
 
     fun triggerTestPreview() {
         handleLucidCueTrigger(source = "手动调试测试", isTest = true)
+    }
+
+    fun clearInitialProtection() {
+        guardStartTime = 0L
+        _protectionRemainingSeconds.value = 0
     }
 
     fun updateBleScanState(enabled: Boolean, targetUuid: String) {
@@ -238,9 +261,12 @@ class DreamCueGuardService : Service() {
         val now = System.currentTimeMillis()
 
         if (!isTest) {
-            // Immediate atomic fast-check to drop BLE burst packets in milliseconds
-            val fastLastTime = inMemoryLastTriggerTime.get()
-            if (fastLastTime != 0L && (now - fastLastTime < 5000L)) {
+            // 1. Immediate atomic fast-check to drop BLE burst packets in milliseconds
+            val lastBurst = inMemoryFastBurstTime.get()
+            if (lastBurst != 0L && (now - lastBurst < 3000L)) {
+                return
+            }
+            if (!inMemoryFastBurstTime.compareAndSet(lastBurst, now)) {
                 return
             }
         }
@@ -249,6 +275,16 @@ class DreamCueGuardService : Service() {
             val settings = settingsRepository.getSettings()
 
             if (!isTest) {
+                // 2. Check Initial Sleep Onset Protection Period (入睡保护期)
+                val protectionMs = settings.initialProtectionMinutes * 60 * 1000L
+                val elapsedSinceGuardStart = now - guardStartTime
+                if (protectionMs > 0 && guardStartTime > 0L && elapsedSinceGuardStart < protectionMs) {
+                    val remainingMins = ((protectionMs - elapsedSinceGuardStart) / 60000L).coerceAtLeast(1)
+                    Log.w(TAG, "Trigger from '$source' dropped: inside initial sleep protection period ($remainingMins mins remaining)")
+                    return@launch
+                }
+
+                // 3. Check Cooldown Lock (防惊醒冷却锁)
                 val cooldownMs = settings.cooldownMinutes * 60 * 1000L
                 val lastTime = inMemoryLastTriggerTime.get().coerceAtLeast(settings.lastTriggerTimestamp)
                 val timeSinceLast = now - lastTime
@@ -301,21 +337,34 @@ class DreamCueGuardService : Service() {
         return sdf.format(java.util.Date())
     }
 
-    private fun startCooldownTicker() {
-        cooldownTickerJob?.cancel()
-        cooldownTickerJob = serviceScope.launch {
+    private fun startTicker() {
+        tickerJob?.cancel()
+        tickerJob = serviceScope.launch {
             while (isActive) {
                 val settings = settingsRepository.getSettings()
                 val now = System.currentTimeMillis()
+
+                // Update Initial Protection Countdown
+                val protectionMs = settings.initialProtectionMinutes * 60 * 1000L
+                val elapsedSinceGuardStart = now - guardStartTime
+                val remainingProtection = if (protectionMs > 0 && guardStartTime > 0L && elapsedSinceGuardStart < protectionMs) {
+                    ((protectionMs - elapsedSinceGuardStart) / 1000L).toInt()
+                } else {
+                    0
+                }
+                _protectionRemainingSeconds.value = remainingProtection
+
+                // Update Cooldown Countdown
                 val cooldownMs = settings.cooldownMinutes * 60 * 1000L
                 val lastTime = inMemoryLastTriggerTime.get().coerceAtLeast(settings.lastTriggerTimestamp)
                 val elapsed = now - lastTime
-                val remaining = if (lastTime != 0L && elapsed < cooldownMs) {
+                val remainingCooldown = if (lastTime != 0L && elapsed < cooldownMs) {
                     ((cooldownMs - elapsed) / 1000L).toInt()
                 } else {
                     0
                 }
-                _cooldownRemainingSeconds.value = remaining
+                _cooldownRemainingSeconds.value = remainingCooldown
+
                 delay(1000)
             }
         }

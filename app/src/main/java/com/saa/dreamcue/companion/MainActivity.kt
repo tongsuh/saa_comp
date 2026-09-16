@@ -17,32 +17,49 @@ import com.saa.dreamcue.companion.ui.theme.DreamCueTheme
 
 class MainActivity : ComponentActivity() {
 
+    private lateinit var viewModel: DreamCueViewModel
+
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { _ ->
-        // Permissions handled
+        if (::viewModel.isInitialized) {
+            viewModel.checkPermissions(this)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestPermissionsIfNeeded()
 
         val repository = SettingsRepository(applicationContext)
-        val viewModel = ViewModelProvider(this, object : ViewModelProvider.Factory {
+        viewModel = ViewModelProvider(this, object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
                 return DreamCueViewModel(repository) as T
             }
         })[DreamCueViewModel::class.java]
 
+        viewModel.checkPermissions(this)
+        requestPermissionsIfNeeded()
+
         setContent {
             DreamCueTheme {
-                DreamCueScreen(viewModel = viewModel)
+                DreamCueScreen(
+                    viewModel = viewModel,
+                    onRequestPermissions = { requestPermissionsIfNeeded() },
+                    onOpenSettings = { openAppSettings() }
+                )
             }
         }
     }
 
-    private fun requestPermissionsIfNeeded() {
+    override fun onResume() {
+        super.onResume()
+        if (::viewModel.isInitialized) {
+            viewModel.checkPermissions(this)
+        }
+    }
+
+    fun requestPermissionsIfNeeded() {
         val permissions = mutableListOf<String>()
 
         // Notifications permission (Android 13+)
@@ -56,7 +73,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Bluetooth scanning permissions
+        // Bluetooth scanning & companion permissions (Android 12+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             if (ContextCompat.checkSelfPermission(
                     this,
@@ -73,6 +90,7 @@ class MainActivity : ComponentActivity() {
                 permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
             }
         } else {
+            // Location permissions for BLE scanning (Android 6.0 ~ 11)
             if (ContextCompat.checkSelfPermission(
                     this,
                     Manifest.permission.ACCESS_FINE_LOCATION
@@ -80,10 +98,32 @@ class MainActivity : ComponentActivity() {
             ) {
                 permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
             }
+            if (ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            }
         }
 
         if (permissions.isNotEmpty()) {
             requestPermissionLauncher.launch(permissions.toTypedArray())
+        }
+    }
+
+    private fun openAppSettings() {
+        try {
+            val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", packageName, null)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            val intent = Intent(android.provider.Settings.ACTION_SETTINGS).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            startActivity(intent)
         }
     }
 }
