@@ -24,24 +24,25 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Audiotrack
+import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.NightsStay
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Vibration
 import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -53,6 +54,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -62,7 +64,6 @@ import com.saa.dreamcue.companion.ui.theme.DarkCard
 import com.saa.dreamcue.companion.ui.theme.DarkSurface
 import com.saa.dreamcue.companion.ui.theme.GoldAccent
 import com.saa.dreamcue.companion.ui.theme.GoldDim
-import com.saa.dreamcue.companion.ui.theme.GoldMuted
 import com.saa.dreamcue.companion.ui.theme.GreenActive
 import com.saa.dreamcue.companion.ui.theme.PureBlack
 import com.saa.dreamcue.companion.ui.theme.RedStop
@@ -78,6 +79,8 @@ fun DreamCueScreen(viewModel: DreamCueViewModel) {
     val isRunning by viewModel.isGuardRunning.collectAsState()
     val isExecuting by viewModel.isExecutingCue.collectAsState()
     val cooldownRemaining by viewModel.cooldownRemainingSeconds.collectAsState()
+    val isBleScanning by viewModel.isBleScanning.collectAsState()
+    val lastTriggerSource by viewModel.lastTriggerSource.collectAsState()
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -117,7 +120,7 @@ fun DreamCueScreen(viewModel: DreamCueViewModel) {
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
-                            text = "for SaA & 华为手环8",
+                            text = "SaA & 蓝牙硬件双模",
                             color = TextTertiary,
                             fontSize = 12.sp
                         )
@@ -140,8 +143,26 @@ fun DreamCueScreen(viewModel: DreamCueViewModel) {
                 StatusCard(
                     isRunning = isRunning,
                     isExecuting = isExecuting,
+                    isBleScanning = isBleScanning,
+                    lastTriggerSource = lastTriggerSource,
                     cooldownRemaining = cooldownRemaining,
                     onResetCooldown = { viewModel.resetCooldown() }
+                )
+
+                // BLE Hardware Trigger Card
+                BleConfigCard(
+                    bleScanEnabled = settings.bleScanEnabled,
+                    targetUuid = settings.targetServiceUuid,
+                    isBleScanning = isBleScanning,
+                    onBleScanEnabledChange = { enabled ->
+                        viewModel.updateBleSettings(enabled, settings.targetServiceUuid)
+                    }
+                )
+
+                // SaA Trigger Switch Card
+                SaaConfigCard(
+                    saaEnabled = settings.saaBroadcastEnabled,
+                    onSaaEnabledChange = { viewModel.updateSaaBroadcastEnabled(it) }
                 )
 
                 // Audio Settings Card
@@ -205,7 +226,7 @@ fun DreamCueScreen(viewModel: DreamCueViewModel) {
                     onTotalSecondsChange = { viewModel.updateVibration(it) }
                 )
 
-                // Cooldown Setting Card
+                // Cooldown Setting Card (Default 20 mins)
                 CooldownConfigCard(
                     cooldownMinutes = settings.cooldownMinutes,
                     onCooldownChange = { viewModel.updateCooldown(it) }
@@ -259,6 +280,8 @@ fun StatusIndicator(isRunning: Boolean, isExecuting: Boolean) {
 fun StatusCard(
     isRunning: Boolean,
     isExecuting: Boolean,
+    isBleScanning: Boolean,
+    lastTriggerSource: String,
     cooldownRemaining: Int,
     onResetCooldown: () -> Unit
 ) {
@@ -279,7 +302,7 @@ fun StatusCard(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "系统运行状态",
+                    text = "系统运行与就绪状态",
                     color = TextPrimary,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold
@@ -290,14 +313,22 @@ fun StatusCard(
 
             Text(
                 text = if (isRunning) {
-                    "广播监听已就绪：正在后台等待 Sleep as Android 发出 com.urbandroid.sleep.LUCID_CUE_ACTION 触发信号。"
+                    val bleDesc = if (isBleScanning) "已挂载蓝牙芯片级硬件过滤扫描" else "蓝牙扫描未激活"
+                    "双模守护运行中：$bleDesc，同时待命 Sleep as Android 广播信号。"
                 } else {
-                    "守护未开启：请在就寝前点击底部【🌙 开启后台守护】。"
+                    "守护未开启：请就寝前点击底部【🌙 开启后台守护】。"
                 },
                 color = TextSecondary,
                 fontSize = 13.sp,
                 lineHeight = 18.sp
             )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(text = "最新触发：", color = TextTertiary, fontSize = 12.sp)
+                Text(text = lastTriggerSource, color = GoldAccent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            }
 
             AnimatedVisibility(visible = cooldownRemaining > 0) {
                 Column {
@@ -336,6 +367,152 @@ fun StatusCard(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun BleConfigCard(
+    bleScanEnabled: Boolean,
+    targetUuid: String,
+    isBleScanning: Boolean,
+    onBleScanEnabledChange: (Boolean) -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = DarkCard),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, DarkBorder, RoundedCornerShape(12.dp))
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = if (isBleScanning) Icons.Default.BluetoothSearching else Icons.Default.Bluetooth,
+                        contentDescription = null,
+                        tint = GoldAccent,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "BLE 硬件广播过滤扫描",
+                        color = TextPrimary,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Switch(
+                    checked = bleScanEnabled,
+                    onCheckedChange = onBleScanEnabledChange,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = PureBlack,
+                        checkedTrackColor = GoldAccent
+                    )
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "通过 ScanFilter 针对特定 128-bit Service UUID 进行底层芯片硬件过滤。即使半夜手机灭屏深度休眠，外设发送匹配广播包后也会毫秒级瞬间唤醒并执行触梦！",
+                color = TextSecondary,
+                fontSize = 12.sp,
+                lineHeight = 17.sp
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(DarkSurface, RoundedCornerShape(8.dp))
+                    .padding(10.dp)
+            ) {
+                Text(
+                    text = "目标过滤 SERVICE UUID",
+                    color = TextTertiary,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = targetUuid,
+                    color = GoldAccent,
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+
+            if (isBleScanning) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(GreenActive)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "硬件过滤扫描处于活跃待命状态",
+                        color = GreenActive,
+                        fontSize = 11.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SaaConfigCard(
+    saaEnabled: Boolean,
+    onSaaEnabledChange: (Boolean) -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = DarkCard),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, DarkBorder, RoundedCornerShape(12.dp))
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Sleep as Android 广播监听",
+                    color = TextPrimary,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "监听 com.urbandroid.sleep.LUCID_CUE_ACTION 意图广播",
+                    color = TextSecondary,
+                    fontSize = 12.sp
+                )
+            }
+
+            Switch(
+                checked = saaEnabled,
+                onCheckedChange = onSaaEnabledChange,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = PureBlack,
+                    checkedTrackColor = GoldAccent
+                )
+            )
         }
     }
 }
@@ -596,9 +773,10 @@ fun CooldownConfigCard(
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = "触发一次后自动锁定，防止 SaA 在同个浅睡周期多次误判连环轰炸造成惊醒。",
+                text = "触发一次后自动进入 20 分钟静默期。无论是 BLE 外设的高频广播风暴，还是 SaA 在浅睡边缘的重复广播，在冷却期内均直接静默过滤，彻底杜绝连续惊醒。",
                 color = TextSecondary,
-                fontSize = 12.sp
+                fontSize = 12.sp,
+                lineHeight = 17.sp
             )
 
             Spacer(modifier = Modifier.height(10.dp))
@@ -607,8 +785,8 @@ fun CooldownConfigCard(
                 title = "冷却间隔",
                 valueDisplay = "${cooldownMinutes} 分钟",
                 value = cooldownMinutes.toFloat(),
-                range = 10f..60f,
-                steps = 9,
+                range = 5f..60f,
+                steps = 54,
                 onValueChange = { onCooldownChange(it.toInt()) }
             )
         }
@@ -681,7 +859,7 @@ fun BottomActionBar(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = if (isRunning) "⏹ 停止后台守护" else "🌙 开启后台守护 (监听 SaA)",
+                    text = if (isRunning) "⏹ 停止后台守护" else "🌙 开启后台守护 (双模监听)",
                     color = if (isRunning) TextPrimary else PureBlack,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold

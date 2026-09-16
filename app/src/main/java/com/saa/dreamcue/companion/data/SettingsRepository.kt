@@ -22,9 +22,12 @@ data class DreamCueSettings(
     val audioFadeInSeconds: Int = 3,
     val audioFadeOutSeconds: Int = 3,
     val vibrationTotalSeconds: Int = 6,
-    val cooldownMinutes: Int = 30,
+    val cooldownMinutes: Int = 20, // Default changed to 20 minutes
     val lastTriggerTimestamp: Long = 0L,
-    val isGuardActive: Boolean = false
+    val isGuardActive: Boolean = false,
+    val bleScanEnabled: Boolean = true,
+    val targetServiceUuid: String = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+    val saaBroadcastEnabled: Boolean = true
 )
 
 class SettingsRepository(private val context: Context) {
@@ -39,6 +42,9 @@ class SettingsRepository(private val context: Context) {
         val KEY_COOLDOWN_MINUTES = intPreferencesKey("cooldown_minutes")
         val KEY_LAST_TRIGGER_TIMESTAMP = longPreferencesKey("last_trigger_timestamp")
         val KEY_IS_GUARD_ACTIVE = booleanPreferencesKey("is_guard_active")
+        val KEY_BLE_SCAN_ENABLED = booleanPreferencesKey("ble_scan_enabled")
+        val KEY_TARGET_SERVICE_UUID = stringPreferencesKey("target_service_uuid")
+        val KEY_SAA_BROADCAST_ENABLED = booleanPreferencesKey("saa_broadcast_enabled")
     }
 
     val settingsFlow: Flow<DreamCueSettings> = context.dataStore.data.map { preferences ->
@@ -49,9 +55,12 @@ class SettingsRepository(private val context: Context) {
             audioFadeInSeconds = preferences[PreferencesKeys.KEY_AUDIO_FADE_IN_SECONDS] ?: 3,
             audioFadeOutSeconds = preferences[PreferencesKeys.KEY_AUDIO_FADE_OUT_SECONDS] ?: 3,
             vibrationTotalSeconds = preferences[PreferencesKeys.KEY_VIBRATION_TOTAL_SECONDS] ?: 6,
-            cooldownMinutes = preferences[PreferencesKeys.KEY_COOLDOWN_MINUTES] ?: 30,
+            cooldownMinutes = preferences[PreferencesKeys.KEY_COOLDOWN_MINUTES] ?: 20,
             lastTriggerTimestamp = preferences[PreferencesKeys.KEY_LAST_TRIGGER_TIMESTAMP] ?: 0L,
-            isGuardActive = preferences[PreferencesKeys.KEY_IS_GUARD_ACTIVE] ?: false
+            isGuardActive = preferences[PreferencesKeys.KEY_IS_GUARD_ACTIVE] ?: false,
+            bleScanEnabled = preferences[PreferencesKeys.KEY_BLE_SCAN_ENABLED] ?: true,
+            targetServiceUuid = preferences[PreferencesKeys.KEY_TARGET_SERVICE_UUID] ?: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+            saaBroadcastEnabled = preferences[PreferencesKeys.KEY_SAA_BROADCAST_ENABLED] ?: true
         )
     }
 
@@ -94,6 +103,19 @@ class SettingsRepository(private val context: Context) {
     suspend fun updateGuardActive(active: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.KEY_IS_GUARD_ACTIVE] = active
+        }
+    }
+
+    suspend fun updateBleSettings(enabled: Boolean, targetUuid: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.KEY_BLE_SCAN_ENABLED] = enabled
+            preferences[PreferencesKeys.KEY_TARGET_SERVICE_UUID] = targetUuid
+        }
+    }
+
+    suspend fun updateSaaBroadcastEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.KEY_SAA_BROADCAST_ENABLED] = enabled
         }
     }
 }

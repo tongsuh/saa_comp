@@ -20,7 +20,7 @@ class MainActivity : ComponentActivity() {
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { _ ->
-        // Notification permission handled
+        // Permissions handled
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -44,6 +44,8 @@ class MainActivity : ComponentActivity() {
 
     private fun requestPermissionsIfNeeded() {
         val permissions = mutableListOf<String>()
+
+        // Notifications permission (Android 13+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(
                     this,
@@ -51,6 +53,32 @@ class MainActivity : ComponentActivity() {
                 ) != PackageManager.PERMISSION_GRANTED
             ) {
                 permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+
+        // Bluetooth scanning permissions
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.BLUETOOTH_SCAN
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                permissions.add(Manifest.permission.BLUETOOTH_SCAN)
+            }
+            if (ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.BLUETOOTH_CONNECT
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+            }
+        } else {
+            if (ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.ACCESS_FINE_LOCATION
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
             }
         }
 

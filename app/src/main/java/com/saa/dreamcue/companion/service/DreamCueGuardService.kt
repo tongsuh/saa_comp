@@ -6,10 +6,12 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.bluetooth.BluetoothAdapter
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
@@ -20,6 +22,7 @@ import com.saa.dreamcue.companion.MainActivity
 import com.saa.dreamcue.companion.R
 import com.saa.dreamcue.companion.data.SettingsRepository
 import com.saa.dreamcue.companion.engine.AudioFadeController
+import com.saa.dreamcue.companion.engine.BleScanController
 import com.saa.dreamcue.companion.engine.HuaweiPulseController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,6 +35,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicLong
 
 class DreamCueGuardService : Service() {
 
@@ -55,6 +59,12 @@ class DreamCueGuardService : Service() {
 
         private val _cooldownRemainingSeconds = MutableStateFlow(0)
         val cooldownRemainingSeconds: StateFlow<Int> = _cooldownRemainingSeconds.asStateFlow()
+
+        private val _isBleScanning = MutableStateFlow(false)
+        val isBleScanning: StateFlow<Boolean> = _isBleScanning.asStateFlow()
+
+        private val _lastTriggerSource = MutableStateFlow("尚未触发")
+        val lastTriggerSource: StateFlow<String> = _lastTriggerSource.asStateFlow()
     }
 
     inner class LocalBinder : Binder() {
@@ -67,17 +77,44 @@ class DreamCueGuardService : Service() {
     private lateinit var settingsRepository: SettingsRepository
     private lateinit var audioController: AudioFadeController
     private lateinit var pulseController: HuaweiPulseController
+    private lateinit var bleScanController: BleScanController
 
     private var wakeLock: PowerManager.WakeLock? = null
-    private var isReceiverRegistered = false
+    private var isLucidReceiverRegistered = false
+    private var isBtReceiverRegistered = false
     private var activeExecutionJob: Job? = null
     private var cooldownTickerJob: Job? = null
+
+    // In-memory atomic timestamp to prevent packet storm race conditions
+    private val inMemoryLastTriggerTime = AtomicLong(0L)
 
     private val lucidReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == ACTION_SAA_LUCID_CUE) {
-                Log.i(TAG, "Captured Sleep as Android lucid dream broadcast: ${intent.action}")
-                handleLucidCueTrigger(isTest = false)
+                Log.i(TAG, "Captured Sleep as Android lucid dream broadcast")
+                handleLucidCueTrigger(source = "Sleep as Android 广播", isTest = false)
+            }
+        }
+    }
+
+    private val bluetoothStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+                val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+                if (state == BluetoothAdapter.STATE_ON) {
+                    Log.i(TAG, "Bluetooth turned ON: auto-resuming BLE scanning if enabled")
+                    serviceScope.launch {
+                        val settings = settingsRepository.getSettings()
+                        if (settings.bleScanEnabled) {
+                            val started = bleScanController.startScanning(settings.targetServiceUuid)
+                            _isBleScanning.value = started
+                        }
+                    }
+                } else if (state == BluetoothAdapter.STATE_TURNING_OFF || state == BluetoothAdapter.STATE_OFF) {
+                    Log.i(TAG, "Bluetooth turned OFF: pausing scanner")
+                    _isBleScanning.value = false
+                    bleScanController.stopScanning()
+                }
             }
         }
     }
@@ -88,13 +125,19 @@ class DreamCueGuardService : Service() {
         audioController = AudioFadeController(applicationContext)
         pulseController = HuaweiPulseController(applicationContext)
 
+        bleScanController = BleScanController(applicationContext) { scanResult ->
+            val deviceAddress = scanResult.device?.address ?: "Unknown"
+            Log.i(TAG, "Captured BLE Advertising packet with target UUID from $deviceAddress")
+            handleLucidCueTrigger(source = "BLE 硬件广播 ($deviceAddress)", isTest = false)
+        }
+
         acquireWakeLock()
         createGuardNotificationChannel()
-        registerLucidReceiver()
+        registerBluetoothStateReceiver()
         startCooldownTicker()
 
         _isRunning.value = true
-        Log.i(TAG, "DreamCueGuardService started and initialized")
+        Log.i(TAG, "DreamCueGuardService created and initialized")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -106,11 +149,43 @@ class DreamCueGuardService : Service() {
             }
             ACTION_TEST_TRIGGER -> {
                 Log.i(TAG, "Received test trigger request from UI")
-                handleLucidCueTrigger(isTest = true)
+                handleLucidCueTrigger(source = "手动调试测试", isTest = true)
             }
             else -> {
-                val notification = buildForegroundNotification("清醒梦伴侣守护中", "已挂载 SaA 监听与华为手环8高频微脉冲通道")
-                startForeground(NOTIFICATION_ID, notification)
+                val notification = buildForegroundNotification(
+                    title = "清醒梦双模守护中",
+                    content = "已挂载 SaA 广播监听与低功耗蓝牙硬件级过滤扫描"
+                )
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(
+                        NOTIFICATION_ID,
+                        notification,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                    )
+                } else {
+                    startForeground(NOTIFICATION_ID, notification)
+                }
+
+                // Apply settings to configure triggers
+                serviceScope.launch {
+                    val settings = settingsRepository.getSettings()
+
+                    if (settings.saaBroadcastEnabled) {
+                        registerLucidReceiver()
+                    } else {
+                        unregisterLucidReceiver()
+                    }
+
+                    if (settings.bleScanEnabled) {
+                        val started = bleScanController.startScanning(settings.targetServiceUuid)
+                        _isBleScanning.value = started
+                        Log.i(TAG, "BLE Scanner active: $started for UUID ${settings.targetServiceUuid}")
+                    } else {
+                        bleScanController.stopScanning()
+                        _isBleScanning.value = false
+                    }
+                }
             }
         }
         return START_STICKY
@@ -122,7 +197,10 @@ class DreamCueGuardService : Service() {
         super.onDestroy()
         _isRunning.value = false
         _isExecutingCue.value = false
+        _isBleScanning.value = false
         unregisterLucidReceiver()
+        unregisterBluetoothStateReceiver()
+        bleScanController.stopScanning()
         activeExecutionJob?.cancel()
         cooldownTickerJob?.cancel()
         audioController.stop()
@@ -133,34 +211,66 @@ class DreamCueGuardService : Service() {
     }
 
     fun triggerTestPreview() {
-        handleLucidCueTrigger(isTest = true)
+        handleLucidCueTrigger(source = "手动调试测试", isTest = true)
     }
 
-    private fun handleLucidCueTrigger(isTest: Boolean) {
+    fun updateBleScanState(enabled: Boolean, targetUuid: String) {
+        serviceScope.launch {
+            if (enabled) {
+                val started = bleScanController.startScanning(targetUuid)
+                _isBleScanning.value = started
+            } else {
+                bleScanController.stopScanning()
+                _isBleScanning.value = false
+            }
+        }
+    }
+
+    fun updateSaaReceiverState(enabled: Boolean) {
+        if (enabled) {
+            registerLucidReceiver()
+        } else {
+            unregisterLucidReceiver()
+        }
+    }
+
+    private fun handleLucidCueTrigger(source: String, isTest: Boolean) {
+        val now = System.currentTimeMillis()
+
+        if (!isTest) {
+            // Immediate atomic fast-check to drop BLE burst packets in milliseconds
+            val fastLastTime = inMemoryLastTriggerTime.get()
+            if (fastLastTime != 0L && (now - fastLastTime < 5000L)) {
+                return
+            }
+        }
+
         serviceScope.launch(Dispatchers.Default) {
             val settings = settingsRepository.getSettings()
 
             if (!isTest) {
-                val now = System.currentTimeMillis()
                 val cooldownMs = settings.cooldownMinutes * 60 * 1000L
-                val timeSinceLast = now - settings.lastTriggerTimestamp
+                val lastTime = inMemoryLastTriggerTime.get().coerceAtLeast(settings.lastTriggerTimestamp)
+                val timeSinceLast = now - lastTime
 
-                if (timeSinceLast < cooldownMs) {
+                if (lastTime != 0L && timeSinceLast < cooldownMs) {
                     val remainingMins = ((cooldownMs - timeSinceLast) / 60000L).coerceAtLeast(1)
-                    Log.w(TAG, "Lucid cue dropped due to cooldown lock ($remainingMins mins remaining)")
+                    Log.w(TAG, "Trigger from '$source' dropped: inside ${settings.cooldownMinutes}m cooldown ($remainingMins mins remaining)")
                     return@launch
                 }
 
-                // Update last trigger time
+                inMemoryLastTriggerTime.set(now)
                 settingsRepository.updateLastTriggerTimestamp(now)
             }
+
+            _lastTriggerSource.value = "$source (${formatCurrentTime()})"
 
             // Cancel any previous running cue
             activeExecutionJob?.cancel()
 
             activeExecutionJob = launch {
                 _isExecutingCue.value = true
-                Log.i(TAG, "Executing dream cue dual-channel action (isTest=$isTest)")
+                Log.i(TAG, "Executing dream cue dual-channel action (source=$source, isTest=$isTest)")
 
                 val audioJob = launch {
                     audioController.playWithFade(
@@ -181,9 +291,14 @@ class DreamCueGuardService : Service() {
                 audioJob.join()
                 pulseJob.join()
                 _isExecutingCue.value = false
-                Log.i(TAG, "Completed dream cue dual-channel execution")
+                Log.i(TAG, "Completed dream cue dual-channel execution from $source")
             }
         }
+    }
+
+    private fun formatCurrentTime(): String {
+        val sdf = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+        return sdf.format(java.util.Date())
     }
 
     private fun startCooldownTicker() {
@@ -193,8 +308,9 @@ class DreamCueGuardService : Service() {
                 val settings = settingsRepository.getSettings()
                 val now = System.currentTimeMillis()
                 val cooldownMs = settings.cooldownMinutes * 60 * 1000L
-                val elapsed = now - settings.lastTriggerTimestamp
-                val remaining = if (elapsed < cooldownMs) {
+                val lastTime = inMemoryLastTriggerTime.get().coerceAtLeast(settings.lastTriggerTimestamp)
+                val elapsed = now - lastTime
+                val remaining = if (lastTime != 0L && elapsed < cooldownMs) {
                     ((cooldownMs - elapsed) / 1000L).toInt()
                 } else {
                     0
@@ -207,26 +323,47 @@ class DreamCueGuardService : Service() {
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
     private fun registerLucidReceiver() {
-        if (!isReceiverRegistered) {
+        if (!isLucidReceiverRegistered) {
             val filter = IntentFilter(ACTION_SAA_LUCID_CUE)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 registerReceiver(lucidReceiver, filter, RECEIVER_EXPORTED)
             } else {
                 registerReceiver(lucidReceiver, filter)
             }
-            isReceiverRegistered = true
+            isLucidReceiverRegistered = true
             Log.d(TAG, "Registered broadcast receiver for $ACTION_SAA_LUCID_CUE")
         }
     }
 
     private fun unregisterLucidReceiver() {
-        if (isReceiverRegistered) {
+        if (isLucidReceiverRegistered) {
             try {
                 unregisterReceiver(lucidReceiver)
             } catch (e: Exception) {
-                Log.w(TAG, "Error unregistering receiver", e)
+                Log.w(TAG, "Error unregistering lucid receiver", e)
             }
-            isReceiverRegistered = false
+            isLucidReceiverRegistered = false
+        }
+    }
+
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
+    private fun registerBluetoothStateReceiver() {
+        if (!isBtReceiverRegistered) {
+            val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+            registerReceiver(bluetoothStateReceiver, filter)
+            isBtReceiverRegistered = true
+            Log.d(TAG, "Registered bluetoothStateReceiver")
+        }
+    }
+
+    private fun unregisterBluetoothStateReceiver() {
+        if (isBtReceiverRegistered) {
+            try {
+                unregisterReceiver(bluetoothStateReceiver)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error unregistering bluetoothStateReceiver", e)
+            }
+            isBtReceiverRegistered = false
         }
     }
 

@@ -24,6 +24,8 @@ class DreamCueViewModel(private val repository: SettingsRepository) : ViewModel(
     val isGuardRunning: StateFlow<Boolean> = DreamCueGuardService.isRunning
     val isExecutingCue: StateFlow<Boolean> = DreamCueGuardService.isExecutingCue
     val cooldownRemainingSeconds: StateFlow<Int> = DreamCueGuardService.cooldownRemainingSeconds
+    val isBleScanning: StateFlow<Boolean> = DreamCueGuardService.isBleScanning
+    val lastTriggerSource: StateFlow<String> = DreamCueGuardService.lastTriggerSource
 
     fun startGuard(context: Context) {
         val intent = Intent(context, DreamCueGuardService::class.java).apply {
@@ -67,6 +69,18 @@ class DreamCueViewModel(private val repository: SettingsRepository) : ViewModel(
     fun resetCooldown() {
         viewModelScope.launch {
             repository.updateLastTriggerTimestamp(0L)
+        }
+    }
+
+    fun updateBleSettings(enabled: Boolean, targetUuid: String) {
+        viewModelScope.launch {
+            repository.updateBleSettings(enabled, targetUuid)
+        }
+    }
+
+    fun updateSaaBroadcastEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            repository.updateSaaBroadcastEnabled(enabled)
         }
     }
 }
