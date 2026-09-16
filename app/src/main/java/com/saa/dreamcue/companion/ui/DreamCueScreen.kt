@@ -28,7 +28,6 @@ import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.HourglassEmpty
-import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.NightsStay
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Warning
@@ -468,7 +467,7 @@ fun StatusCard(
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                             Icon(
-                                imageVector = Icons.Default.HourglassTop,
+                                imageVector = Icons.Default.HourglassEmpty,
                                 contentDescription = null,
                                 tint = CyanAccent,
                                 modifier = Modifier.size(16.dp)
@@ -912,7 +911,7 @@ fun InitialProtectionConfigCard(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        imageVector = Icons.Default.HourglassTop,
+                        imageVector = Icons.Default.HourglassEmpty,
                         contentDescription = null,
                         tint = GoldAccent,
                         modifier = Modifier.size(20.dp)
@@ -952,7 +951,7 @@ fun InitialProtectionConfigCard(
                 range = 0f..120f,
                 steps = 7, // 0, 15, 30, 45, 60, 75, 90, 105, 120
                 onValueChange = {
-                    val stepped = (Math.round(it / 15f) * 15).coerceIn(0, 120)
+                    val stepped = (((it + 7.5f) / 15f).toInt() * 15).coerceIn(0, 120)
                     onInitialProtectionChange(stepped)
                 }
             )

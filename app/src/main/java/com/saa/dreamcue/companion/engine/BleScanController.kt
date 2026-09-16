@@ -52,12 +52,10 @@ class BleScanController(
         }
 
         override fun onBatchScanResults(results: MutableList<ScanResult>?) {
-            results?.forEach { scanResult ->
-                if (isTargetMatch(scanResult)) {
-                    Log.i(TAG, "SUCCESS: Matched target BLE device (Batch): ${scanResult.device.address}")
-                    onTargetDetected(scanResult)
-                    return@forEach
-                }
+            results?.firstOrNull { isTargetMatch(it) }?.let { scanResult ->
+                val deviceAddress = scanResult.device?.address ?: "Unknown"
+                Log.i(TAG, "SUCCESS: Matched target BLE device (Batch): $deviceAddress")
+                onTargetDetected(scanResult)
             }
         }
 
@@ -98,17 +96,13 @@ class BleScanController(
         val scanRecord = result.scanRecord
 
         // 1. Check parsed Service UUIDs (Standard 0x06 / 0x07)
-        scanRecord?.serviceUuids?.forEach { parcelUuid ->
-            if (parcelUuid.uuid == target) {
-                return true
-            }
+        if (scanRecord?.serviceUuids?.any { it.uuid == target } == true) {
+            return true
         }
 
         // 2. Check parsed Service Data (0x16 / 0x21)
-        scanRecord?.serviceData?.keys?.forEach { parcelUuid ->
-            if (parcelUuid.uuid == target) {
-                return true
-            }
+        if (scanRecord?.serviceData?.keys?.any { it.uuid == target } == true) {
+            return true
         }
 
         // 3. Deep Payload Inspection (Bypasses all chip parser bugs, Scan Response fragmentation, etc.)
