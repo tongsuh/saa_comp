@@ -115,16 +115,39 @@ class DreamCueViewModel(private val repository: SettingsRepository) : ViewModel(
         }
     }
 
+    fun updateCooldownEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            repository.updateCooldownEnabled(enabled)
+        }
+    }
+
     fun updateInitialProtection(minutes: Int) {
         viewModelScope.launch {
             repository.updateInitialProtection(minutes)
         }
     }
 
-    fun resetCooldown() {
+    fun updateInitialProtectionEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            repository.updateInitialProtectionEnabled(enabled)
+        }
+    }
+
+    fun resetCooldown(context: Context) {
+        val intent = Intent(context, DreamCueGuardService::class.java).apply {
+            action = DreamCueGuardService.ACTION_RESET_COOLDOWN
+        }
+        context.startService(intent)
         viewModelScope.launch {
             repository.updateLastTriggerTimestamp(0L)
         }
+    }
+
+    fun stopExecutingCue(context: Context) {
+        val intent = Intent(context, DreamCueGuardService::class.java).apply {
+            action = DreamCueGuardService.ACTION_STOP_CUE
+        }
+        context.startService(intent)
     }
 
     fun updateBleSettings(enabled: Boolean, targetUuid: String) {

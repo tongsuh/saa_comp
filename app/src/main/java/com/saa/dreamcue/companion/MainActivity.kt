@@ -30,6 +30,19 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    fun setScreensaverBrightness(active: Boolean) {
+        val window = this.window ?: return
+        val layoutParams = window.attributes
+        if (active) {
+            layoutParams.screenBrightness = 0.01f // Dim to lowest possible hardware backlight
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            layoutParams.screenBrightness = android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        window.attributes = layoutParams
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -49,7 +62,8 @@ class MainActivity : ComponentActivity() {
                 DreamCueScreen(
                     viewModel = viewModel,
                     onRequestPermissions = { requestPermissionsIfNeeded() },
-                    onOpenSettings = { openAppSettings() }
+                    onOpenSettings = { openAppSettings() },
+                    onToggleScreensaverBrightness = { setScreensaverBrightness(it) }
                 )
             }
         }

@@ -48,6 +48,8 @@ class DreamCueGuardService : Service() {
         const val ACTION_STOP_GUARD = "com.saa.dreamcue.STOP_GUARD"
         const val ACTION_TEST_TRIGGER = "com.saa.dreamcue.TEST_TRIGGER"
         const val ACTION_SKIP_PROTECTION = "com.saa.dreamcue.SKIP_PROTECTION"
+        const val ACTION_RESET_COOLDOWN = "com.saa.dreamcue.RESET_COOLDOWN"
+        const val ACTION_STOP_CUE = "com.saa.dreamcue.STOP_CUE"
 
         // Sleep as Android official broadcast intent
         const val ACTION_SAA_LUCID_CUE = "com.urbandroid.sleep.LUCID_CUE_ACTION"
@@ -163,6 +165,16 @@ class DreamCueGuardService : Service() {
                 clearInitialProtection()
                 return START_STICKY
             }
+            ACTION_RESET_COOLDOWN -> {
+                Log.i(TAG, "Received ACTION_RESET_COOLDOWN")
+                clearCooldown()
+                return START_STICKY
+            }
+            ACTION_STOP_CUE -> {
+                Log.i(TAG, "Received ACTION_STOP_CUE from user touch")
+                stopExecutingCue()
+                return START_STICKY
+            }
             else -> {
                 if (guardStartTime == 0L) {
                     guardStartTime = System.currentTimeMillis()
@@ -235,6 +247,25 @@ class DreamCueGuardService : Service() {
     fun clearInitialProtection() {
         guardStartTime = 0L
         _protectionRemainingSeconds.value = 0
+        Log.i(TAG, "Initial sleep protection cleared")
+    }
+
+    fun clearCooldown() {
+        inMemoryLastTriggerTime.set(0L)
+        inMemoryFastBurstTime.set(0L)
+        _cooldownRemainingSeconds.value = 0
+        serviceScope.launch {
+            settingsRepository.updateLastTriggerTimestamp(0L)
+        }
+        Log.i(TAG, "Cooldown lock cleared (in-memory & datastore)")
+    }
+
+    fun stopExecutingCue() {
+        activeExecutionJob?.cancel()
+        audioController.stop()
+        pulseController.cancelAllActive()
+        _isExecutingCue.value = false
+        Log.i(TAG, "Executing cue stopped immediately by user")
     }
 
     fun updateBleScanState(enabled: Boolean, targetUuid: String) {
@@ -276,23 +307,27 @@ class DreamCueGuardService : Service() {
 
             if (!isTest) {
                 // 2. Check Initial Sleep Onset Protection Period (入睡保护期)
-                val protectionMs = settings.initialProtectionMinutes * 60 * 1000L
-                val elapsedSinceGuardStart = now - guardStartTime
-                if (protectionMs > 0 && guardStartTime > 0L && elapsedSinceGuardStart < protectionMs) {
-                    val remainingMins = ((protectionMs - elapsedSinceGuardStart) / 60000L).coerceAtLeast(1)
-                    Log.w(TAG, "Trigger from '$source' dropped: inside initial sleep protection period ($remainingMins mins remaining)")
-                    return@launch
+                if (settings.initialProtectionEnabled) {
+                    val protectionMs = settings.initialProtectionMinutes * 60 * 1000L
+                    val elapsedSinceGuardStart = now - guardStartTime
+                    if (protectionMs > 0 && guardStartTime > 0L && elapsedSinceGuardStart < protectionMs) {
+                        val remainingMins = ((protectionMs - elapsedSinceGuardStart) / 60000L).coerceAtLeast(1)
+                        Log.w(TAG, "Trigger from '$source' dropped: inside initial sleep protection period ($remainingMins mins remaining)")
+                        return@launch
+                    }
                 }
 
                 // 3. Check Cooldown Lock (防惊醒冷却锁)
-                val cooldownMs = settings.cooldownMinutes * 60 * 1000L
-                val lastTime = inMemoryLastTriggerTime.get().coerceAtLeast(settings.lastTriggerTimestamp)
-                val timeSinceLast = now - lastTime
+                if (settings.cooldownEnabled) {
+                    val cooldownMs = settings.cooldownMinutes * 60 * 1000L
+                    val lastTime = inMemoryLastTriggerTime.get().coerceAtLeast(settings.lastTriggerTimestamp)
+                    val timeSinceLast = now - lastTime
 
-                if (lastTime != 0L && timeSinceLast < cooldownMs) {
-                    val remainingMins = ((cooldownMs - timeSinceLast) / 60000L).coerceAtLeast(1)
-                    Log.w(TAG, "Trigger from '$source' dropped: inside ${settings.cooldownMinutes}m cooldown ($remainingMins mins remaining)")
-                    return@launch
+                    if (lastTime != 0L && timeSinceLast < cooldownMs) {
+                        val remainingMins = ((cooldownMs - timeSinceLast) / 60000L).coerceAtLeast(1)
+                        Log.w(TAG, "Trigger from '$source' dropped: inside ${settings.cooldownMinutes}m cooldown ($remainingMins mins remaining)")
+                        return@launch
+                    }
                 }
 
                 inMemoryLastTriggerTime.set(now)
@@ -345,21 +380,29 @@ class DreamCueGuardService : Service() {
                 val now = System.currentTimeMillis()
 
                 // Update Initial Protection Countdown
-                val protectionMs = settings.initialProtectionMinutes * 60 * 1000L
-                val elapsedSinceGuardStart = now - guardStartTime
-                val remainingProtection = if (protectionMs > 0 && guardStartTime > 0L && elapsedSinceGuardStart < protectionMs) {
-                    ((protectionMs - elapsedSinceGuardStart) / 1000L).toInt()
+                val remainingProtection = if (settings.initialProtectionEnabled) {
+                    val protectionMs = settings.initialProtectionMinutes * 60 * 1000L
+                    val elapsedSinceGuardStart = now - guardStartTime
+                    if (protectionMs > 0 && guardStartTime > 0L && elapsedSinceGuardStart < protectionMs) {
+                        ((protectionMs - elapsedSinceGuardStart) / 1000L).toInt()
+                    } else {
+                        0
+                    }
                 } else {
                     0
                 }
                 _protectionRemainingSeconds.value = remainingProtection
 
                 // Update Cooldown Countdown
-                val cooldownMs = settings.cooldownMinutes * 60 * 1000L
-                val lastTime = inMemoryLastTriggerTime.get().coerceAtLeast(settings.lastTriggerTimestamp)
-                val elapsed = now - lastTime
-                val remainingCooldown = if (lastTime != 0L && elapsed < cooldownMs) {
-                    ((cooldownMs - elapsed) / 1000L).toInt()
+                val remainingCooldown = if (settings.cooldownEnabled) {
+                    val cooldownMs = settings.cooldownMinutes * 60 * 1000L
+                    val lastTime = inMemoryLastTriggerTime.get().coerceAtLeast(settings.lastTriggerTimestamp)
+                    val elapsed = now - lastTime
+                    if (lastTime != 0L && elapsed < cooldownMs) {
+                        ((cooldownMs - elapsed) / 1000L).toInt()
+                    } else {
+                        0
+                    }
                 } else {
                     0
                 }
